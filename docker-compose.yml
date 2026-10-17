@@ -1,0 +1,100 @@
+# =============================================================================
+# Docker Compose — Workshop Registration & Notifications
+# =============================================================================
+# Services:
+#   postgres       — PostgreSQL 16 database
+#   backend        — FastAPI backend with outbox dispatcher
+#   mock_notifier  — Mock HTTP notification service
+#
+# Design decisions:
+#   • All services share one network (workshop_net) so containers resolve each
+#     other by service name.
+#   • The backend depends_on postgres with a healthcheck so it never starts
+#     before the DB is accepting connections.
+#   • Postgres data is persisted in a named volume so it survives container
+#     restarts (important for the restart-recovery demo step).
+#   • Environment variables are the only config injection point; no .env file
+#     is required to start, but one can override defaults.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     workshop
+      POSTGRES_PASSWORD: workshop
+      POSTGRES_DB:       workshop_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - workshop_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workshop -d workshop_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Mock Notification Service
+  # ---------------------------------------------------------------------------
+  mock_notifier:
+    build:
+      context: ./mock_notifier
+      dockerfile: Dockerfile
+    environment:
+      FAILURE_RATE:  "0.0"
+      TIMEOUT_RATE:  "0.0"
+      TIMEOUT_SLEEP: "10.0"
+      FULLY_DOWN:    "false"
+      LOG_LEVEL:     "INFO"
+    ports:
+      - "8001:8001"
+    networks:
+      - workshop_net
+
+  # ---------------------------------------------------------------------------
+  # Backend Service
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL:               "postgresql://workshop:workshop@postgres:5432/workshop_db"
+      NOTIFIER_URL:               "http://mock_notifier:8001"
+      NOTIFIER_TIMEOUT:           "5.0"
+      DISPATCHER_POLL_INTERVAL:   "2.0"
+      DISPATCHER_LEASE_SECONDS:   "30"
+      DISPATCHER_CONCURRENCY:     "10"
+      DISPATCHER_BACKOFF_BASE:    "2.0"
+      DISPATCHER_BACKOFF_MAX:     "300.0"
+      DISPATCHER_JITTER_FACTOR:   "0.25"
+      LOG_LEVEL:                  "INFO"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock_notifier:
+        condition: service_started
+    networks:
+      - workshop_net
+    # Restart policy so the backend comes back up automatically after a
+    # simulated crash — this is what the restart-recovery demo step tests.
+    restart: on-failure
+
+# ---------------------------------------------------------------------------
+# Volumes & Networks
+# ---------------------------------------------------------------------------
+volumes:
+  pgdata:
+
+networks:
+  workshop_net:
+    driver: bridge
